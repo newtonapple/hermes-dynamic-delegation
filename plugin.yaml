@@ -1,0 +1,20 @@
+name: dynamic-delegation
+label: Dynamic Delegation (any model per subagent)
+kind: standalone
+version: 0.1.0
+author: David Dai
+license: MIT
+homepage: https://github.com/newtonapple/hermes-dynamic-delegation
+description: >
+  Delegate any subagent to any model you have configured. delegate_task tasks gain one
+  free-form `route` string, `provider/model@effort+tier` (e.g. anthropic/claude-opus-5@max,
+  fireworks glm-5p3-flash@high+fast, local-vllm coder@low). Provider and model are matched
+  fuzzily against every provider you have credentials for, and the model id is validated
+  before the subagent starts, which core does not do. The companion tool
+  dynamic_delegation_models lists, searches and dry-runs specs. Named shortcuts from the
+  advanced-delegation model_map block still work. Hermes keeps the whole subagent
+  lifecycle; this plugin only picks the model. Needs Hermes 0.22.5+.
+requires_hermes: ">=0.22.5"
+provides_tools:
+  - dynamic_delegation_models
+provides_hooks: []
