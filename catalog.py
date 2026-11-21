@@ -12,11 +12,13 @@ ranked candidates when the guess is ambiguous.
 from __future__ import annotations
 
 import difflib
+import logging
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 TIERS = ("normal", "fast", "ultrafast")
@@ -49,7 +51,7 @@ class ModelEntry:
 class ProviderEntry:
     id: str
     label: str = ""
-    kind: str = "catalog"           # "custom" (config.yaml providers:) | "catalog" (built-in)
+    kind: str = "catalog"  # "custom" (config.yaml providers:) | "catalog" (built-in)
     aliases: tuple[str, ...] = ()
     models: list[ModelEntry] = field(default_factory=list)
     base_url: str = ""
@@ -85,8 +87,11 @@ class Resolved:
         return out
 
     def as_route(self) -> dict[str, Any]:
-        route: dict[str, Any] = {"provider": self.provider, "model": self.model,
-                                 "label": self.label or self.canonical()}
+        route: dict[str, Any] = {
+            "provider": self.provider,
+            "model": self.model,
+            "label": self.label or self.canonical(),
+        }
         if self.effort:
             route["reasoning_effort"] = self.effort
         if self.tier:
@@ -99,12 +104,13 @@ class Resolved:
 class RouteRefused(ValueError):
     """The spec cannot be resolved. The message is the tool error the agent reads, so it names fixes."""
 
-    def __init__(self, message: str, candidates: Iterable[str] = ()):
+    def __init__(self, message: str, candidates: Iterable[str] = ()) -> None:
         super().__init__(message)
         self.candidates = list(candidates)
 
 
 # --- catalog construction ---------------------------------------------------------------------
+
 
 def _config_custom_providers() -> list[ProviderEntry]:
     """providers:<name> in config.yaml — the authoritative model list for self-hosted endpoints."""
@@ -134,16 +140,23 @@ def _config_custom_providers() -> list[ProviderEntry]:
                 models.append(ModelEntry(str(mid), meta.get("context_length"), meta.get("supports_vision")))
         elif isinstance(declared, list):
             models = [ModelEntry(str(m)) for m in declared]
-        entries.append(ProviderEntry(id=name, label=str(raw.get("label") or name), kind="custom",
-                                     aliases=tuple(a for a in (raw.get("aliases") or []) if isinstance(a, str)),
-                                     base_url=str(raw.get("base_url") or raw.get("api") or "").strip(),
-                                     models=models))
+        entries.append(
+            ProviderEntry(
+                id=name,
+                label=str(raw.get("label") or name),
+                kind="custom",
+                aliases=tuple(a for a in (raw.get("aliases") or []) if isinstance(a, str)),
+                base_url=str(raw.get("base_url") or raw.get("api") or "").strip(),
+                models=models,
+            )
+        )
     return entries
 
 
 def _read_models_cache() -> dict:
     import json
     import os
+
     path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "provider_models_cache.json"
     try:
         data = json.loads(path.read_text())
@@ -174,7 +187,7 @@ def endpoint_catalog_models(base_url: str) -> list[ModelEntry]:
     for key, entry in _read_models_cache().items():
         if not key.startswith("custom:") or not isinstance(entry, dict):
             continue
-        cached_url = key[len("custom:"):].split("#", 1)[0].rstrip("/")
+        cached_url = key[len("custom:") :].split("#", 1)[0].rstrip("/")
         if cached_url.lower() != base_url.lower():
             continue
         for mid in entry.get("models") or []:
@@ -192,31 +205,38 @@ def _ui_values() -> dict:
     """`values` from the machine's UI-preferences store — the same file the Desktop app writes.
     Prefers core's lock-aware reader; falls back to a plain read for a Hermes without it."""
     import json
+    import os
+
     try:
         from hermes_cli.ui_preferences import read_preferences
-        data = read_preferences()
-        values = data.get("values") if isinstance(data, dict) else None
-        if isinstance(values, dict):
-            return values
-    except Exception:
-        pass
-    import os
+    except ImportError as exc:
+        logger.debug("core ui_preferences module missing (%s); reading the store directly", exc)
+    else:
+        try:
+            values = read_preferences().get("values")
+        except Exception as exc:  # a locked or corrupt store: the plain read below may still work
+            logger.debug("read_preferences failed (%s); reading the store directly", exc)
+        else:
+            if isinstance(values, dict):
+                return values
     path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "ui-preferences.json"
     try:
         data = json.loads(path.read_text())
-    except Exception:
+    except (OSError, ValueError) as exc:
+        logger.debug("cannot read %s (%s)", path, exc)
         return {}
     values = data.get("values") if isinstance(data, dict) else None
     return values if isinstance(values, dict) else {}
 
 
-def _decoded(values: dict, key: str, fallback):
+def _decoded(values: dict, key: str, fallback: object) -> object:
     raw = values.get(key)
     if isinstance(raw, str):
         import json
+
         try:
             return json.loads(raw)
-        except Exception:
+        except ValueError:
             return fallback
     return raw if raw is not None else fallback
 
@@ -228,7 +248,7 @@ def _norm_provider_key(raw: str) -> str:
     if not raw or raw == "custom":
         return ""
     if raw.startswith("custom:"):
-        body = raw[len("custom:"):].split("#", 1)[0]
+        body = raw[len("custom:") :].split("#", 1)[0]
         return body.split("/", 1)[0].strip()
     return raw
 
@@ -334,6 +354,7 @@ def apply_desktop_filter(entries: list[ProviderEntry]) -> list[ProviderEntry]:
 
 def _catalog_provider_models(pid: str) -> list[ModelEntry]:
     from hermes_cli.models import cached_provider_model_ids, static_catalog
+
     ids: list[str] = []
     try:
         ids = list(cached_provider_model_ids(pid, non_blocking=True) or [])
@@ -343,7 +364,9 @@ def _catalog_provider_models(pid: str) -> list[ModelEntry]:
         ids = _cache_file_models(pid)
     if not ids:
         try:
-            ids = [str(m.get("id")) for m in (static_catalog(pid) or []) if isinstance(m, dict) and m.get("id")]
+            ids = [
+                str(m.get("id")) for m in (static_catalog(pid) or []) if isinstance(m, dict) and m.get("id")
+            ]
         except Exception:
             ids = []
     return [ModelEntry(mid) for mid in ids if mid]
@@ -355,6 +378,7 @@ def _cached_catalog_providers() -> list[str]:
     e.g. an Anthropic login borrowed from Claude Code."""
     import json
     import os
+
     path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "provider_models_cache.json"
     try:
         data = json.loads(path.read_text())
@@ -378,8 +402,12 @@ def provider_is_routable(name: str) -> bool:
         return False
 
 
-def build_catalog(include: Optional[set[str]] = None, exclude: Optional[set[str]] = None,
-                  extra_providers: Iterable[str] = (), respect_desktop_filter: bool = True) -> list[ProviderEntry]:
+def build_catalog(
+    include: Optional[set[str]] = None,
+    exclude: Optional[set[str]] = None,
+    extra_providers: Iterable[str] = (),
+    respect_desktop_filter: bool = True,
+) -> list[ProviderEntry]:
     """Every provider the user can likely route to: configured custom endpoints, authenticated
     catalog providers, and providers with a cached (credential-fingerprinted) model list.
     Never touches the network (cache + static catalog only)."""
@@ -394,8 +422,9 @@ def build_catalog(include: Optional[set[str]] = None, exclude: Optional[set[str]
         available = []
     by_id = {str(r.get("id")): r for r in available}
     candidates = [row for row in available if row.get("authenticated")]
-    candidates += [{"id": pid, "label": pid, "aliases": []} for pid in _cached_catalog_providers()
-                   if pid in by_id]
+    candidates += [
+        {"id": pid, "label": pid, "aliases": []} for pid in _cached_catalog_providers() if pid in by_id
+    ]
     for row in candidates + [{"id": str(x), "label": str(x), "aliases": []} for x in extra_providers]:
         pid = str(row.get("id") or "")
         if not pid or pid == "custom" or pid.lower() in entries:
@@ -406,8 +435,12 @@ def build_catalog(include: Optional[set[str]] = None, exclude: Optional[set[str]
         aliases = tuple(row.get("aliases") or ())
         prev = entries.get(pid.lower())
         entries[pid.lower()] = ProviderEntry(
-            id=pid, label=str(row.get("label") or pid), kind="catalog",
-            aliases=tuple(dict.fromkeys((prev.aliases if prev else ()) + aliases)), models=models)
+            id=pid,
+            label=str(row.get("label") or pid),
+            kind="catalog",
+            aliases=tuple(dict.fromkeys((prev.aliases if prev else ()) + aliases)),
+            models=models,
+        )
 
     # A custom provider's hand-written `models:` list goes stale against the live catalog Hermes
     # fetched for that endpoint (what the Desktop picker shows). Merge both, keeping the richer
@@ -420,7 +453,9 @@ def build_catalog(include: Optional[set[str]] = None, exclude: Optional[set[str]
             known = by_id.get(extra.id.lower())
             if known is not None:
                 known.context_length = known.context_length or extra.context_length
-                known.supports_vision = known.supports_vision if known.supports_vision is not None else extra.supports_vision
+                known.supports_vision = (
+                    known.supports_vision if known.supports_vision is not None else extra.supports_vision
+                )
                 continue
             entry.models.append(extra)
             by_id[extra.id.lower()] = extra
@@ -439,6 +474,7 @@ def build_catalog(include: Optional[set[str]] = None, exclude: Optional[set[str]
 
 # --- matching ---------------------------------------------------------------------------------
 
+
 def _score(needle: str, hay: str) -> int:
     """0 = no match. Higher is better. Every level above the refusal floor is a *token-boundary*
     match, so a short id is never absorbed by a longer one: `kimi-k3` must not resolve to
@@ -451,16 +487,16 @@ def _score(needle: str, hay: str) -> int:
     ntok = [t for t in re.split(r"[^a-z0-9]+", n) if t]
     htok = [t for t in re.split(r"[^a-z0-9]+", h) if t]
     if h.startswith(n) and (len(h) == len(n) or not h[len(n)].isalnum()):
-        return 80                       # prefix ending on a token boundary: "glm-5p3" -> "glm-5p3-flash"
+        return 80  # prefix ending on a token boundary: "glm-5p3" -> "glm-5p3-flash"
     if ntok and htok and all(t in htok for t in ntok):
-        return 70                       # every token of the hint is a whole token of the id
+        return 70  # every token of the hint is a whole token of the id
     # Word-prefix on every token: "kimi k3 pro" -> "kimi-k3p1-pro". Lenient by design — the user
     # addresses models by words, and an exact id always outscores it (100), so a real `kimi-k3`
     # present in the list wins over this.
     if ntok and htok and all(any(t == u or (len(t) >= 2 and u.startswith(t)) for u in htok) for t in ntok):
         return 65
     if n in h:
-        return 40                       # substring: below the floor, a candidate, never a resolve
+        return 40  # substring: below the floor, a candidate, never a resolve
     ratio = difflib.SequenceMatcher(None, n, h).ratio()
     return int(ratio * 30) if ratio >= 0.6 else 0
 
@@ -468,15 +504,20 @@ def _score(needle: str, hay: str) -> int:
 def _match_provider(hint: str, catalog: list[ProviderEntry]) -> tuple[Optional[ProviderEntry], int]:
     best, score = None, 0
     for entry in catalog:
-        candidates = [_score(hint, entry.id), _score(hint, entry.label),
-                      *(_score(hint, a) for a in entry.aliases)]
+        candidates = [
+            _score(hint, entry.id),
+            _score(hint, entry.label),
+            *(_score(hint, a) for a in entry.aliases),
+        ]
         s = max(candidates)
         if s > score:
             best, score = entry, s
     return (best, score) if score >= _PROVIDER_MIN else (None, 0)
 
 
-def _match_models(hint: str, entry: ProviderEntry) -> list[tuple[ModelEntry, int]]:
+def match_models(hint: str, entry: ProviderEntry) -> list[tuple[ModelEntry, int]]:
+    """Every model of `entry` the hint matches, best score first. Public: the discovery tool and the
+    resolver share one matcher, so a search and a real route can never disagree."""
     scored = [(m, _score(hint, m.id)) for m in entry.models]
     hits = [(m, s) for m, s in scored if s > 0]
     hits.sort(key=lambda pair: (-pair[1], len(pair[0].id)))
@@ -525,55 +566,68 @@ def parse_spec(spec: str) -> tuple[str, Optional[str], Optional[str], bool]:
     """`provider/model@effort+tier+daybreak` -> (target, effort, tier, daybreak)."""
     m = _ROUTE_RE.match(spec.strip())
     if not m:
-        raise RouteRefused(f"Cannot parse route {spec!r}. Use provider/model@effort+tier, "
-                           f"e.g. anthropic/claude-opus-5-5@max.")
+        raise RouteRefused(
+            f"Cannot parse route {spec!r}. Use provider/model@effort+tier, "
+            f"e.g. anthropic/claude-opus-5-5@max."
+        )
     target = (m.group("target") or "").strip()
     effort = (m.group("effort") or "").strip().lower() or None
     if effort and effort not in EFFORTS:
-        raise RouteRefused(f"Unknown thinking level {effort!r} in {spec!r}. "
-                           f"Use one of: {', '.join(EFFORTS)}.")
+        raise RouteRefused(
+            f"Unknown thinking level {effort!r} in {spec!r}. Use one of: {', '.join(EFFORTS)}."
+        )
     tier: Optional[str] = None
     daybreak = False
-    for token in [t.lstrip("+").strip().lower() for t in (m.group("plus") or "").split("+") if t.strip()]:
-        if token == "daybreak":
+    for modifier in [m.lstrip("+").strip().lower() for m in (m.group("plus") or "").split("+") if m.strip()]:
+        if modifier == "daybreak":
             daybreak = True
-        elif token in _TIER_WORDS:
-            tier = _TIER_WORDS[token]
+        elif modifier in _TIER_WORDS:
+            tier = _TIER_WORDS[modifier]
         else:
-            raise RouteRefused(f"Unknown modifier {token!r} in {spec!r}. "
-                               f"Supported: +fast, +ultrafast, +daybreak.")
+            raise RouteRefused(
+                f"Unknown modifier {modifier!r} in {spec!r}. Supported: +fast, +ultrafast, +daybreak."
+            )
     if not target:
         raise RouteRefused(f"Route {spec!r} has no provider/model part.")
     return target, effort, tier, daybreak
 
 
-def resolve(spec: str, catalog: list[ProviderEntry], parent: Optional[tuple[str, str]] = None,
-            aliases: Optional[dict[str, str]] = None) -> Resolved:
+def resolve(
+    spec: str,
+    catalog: list[ProviderEntry],
+    parent: Optional[tuple[str, str]] = None,
+    aliases: Optional[dict[str, str]] = None,
+) -> Resolved:
     """The agent's free-form spec -> a canonical route. Refuses with candidates when ambiguous."""
     spec = (spec or "").strip()
     if not spec:
         raise RouteRefused("Empty route.")
-    if aliases and spec.lower() in {k.lower(): v for k, v in aliases.items()}:
-        spec = {k.lower(): v for k, v in aliases.items()}[spec.lower()]
+    if aliases:
+        spec = {k.lower(): v for k, v in aliases.items()}.get(spec.lower(), spec)
 
     target, effort, tier, daybreak = parse_spec(spec)
     provider_hint, model_hint = _split_target(target, catalog)
 
-    if provider_hint is None:
+    if provider_hint is None and not any(e.filtered for e in catalog):
         # The agent may name a provider our discovery missed (a borrowed login, a fresh key). Core's
         # own resolver is the authority, so try the head as a provider before refusing. Model ids
-        # cannot be validated for such a provider — it is reported as "unverified".
-        # When the Desktop picker's filter is in force it is the authority instead: a provider the
-        # user does not show there is not routable, so no fallback.
-        if not any(e.filtered for e in catalog):
-            for sep in ("/", " ", ":"):
-                if sep not in target:
-                    continue
-                head, _, tail = target.partition(sep)
-                head, tail = head.strip(), tail.strip()
-                if head and tail and provider_is_routable(head):
-                    return Resolved(provider=head, model=tail, effort=effort, tier=tier, daybreak=daybreak,
-                                    label=spec, provider_kind="unverified")
+        # cannot be validated for such a provider, so it is reported as "unverified". When the
+        # Desktop picker's filter is in force it is the authority instead, and there is no fallback.
+        for sep in ("/", " ", ":"):
+            if sep not in target:
+                continue
+            head, _, tail = target.partition(sep)
+            head, tail = head.strip(), tail.strip()
+            if head and tail and provider_is_routable(head):
+                return Resolved(
+                    provider=head,
+                    model=tail,
+                    effort=effort,
+                    tier=tier,
+                    daybreak=daybreak,
+                    label=spec,
+                    provider_kind="unverified",
+                )
 
     if provider_hint is None and parent and parent[0]:
         entry, score = _match_provider(parent[0], catalog)
@@ -582,42 +636,54 @@ def resolve(spec: str, catalog: list[ProviderEntry], parent: Optional[tuple[str,
             provider_hint = next((e for e in catalog if e.id.lower() == parent[0].lower()), None)
 
     if provider_hint is not None:
-        hits = _match_models(model_hint, provider_hint)
+        hits = match_models(model_hint, provider_hint)
         if not hits:
-            near = difflib.get_close_matches(model_hint, [m.id for m in provider_hint.models], n=5, cutoff=0.4)
-            scope = ("your Desktop model filter" if provider_hint.filtered
-                     else f"{len(provider_hint.models)} models configured")
+            near = difflib.get_close_matches(
+                model_hint, [m.id for m in provider_hint.models], n=5, cutoff=0.4
+            )
+            scope = (
+                "your Desktop model filter"
+                if provider_hint.filtered
+                else f"{len(provider_hint.models)} models configured"
+            )
             raise RouteRefused(
                 f"No model matching {model_hint!r} on provider {provider_hint.id!r} ({scope}). "
                 f"Closest: {', '.join(near) or 'none'}. "
                 f"Call dynamic_delegation_models(action='models', provider={provider_hint.id!r}) for the list.",
-                near)
+                near,
+            )
         best_model, mscore = hits[0]
         tied = [m for m, s in hits if s == mscore]
         if mscore < _MODEL_MIN or len(tied) > 1:
-            scope = " (only models you show in the Desktop picker are routable)" if provider_hint.filtered else ""
+            scope = (
+                " (only models you show in the Desktop picker are routable)" if provider_hint.filtered else ""
+            )
             raise RouteRefused(
                 f"{model_hint!r} is not a confident match on {provider_hint.id}{scope}. "
                 f"Candidates: " + ", ".join(f"{provider_hint.id}/{m.id}" for m in tied[:6]),
-                [f"{provider_hint.id}/{m.id}" for m in tied[:6]])
+                [f"{provider_hint.id}/{m.id}" for m in tied[:6]],
+            )
         resolved_provider, resolved_model = provider_hint, best_model
     else:
         pooled: list[tuple[ProviderEntry, ModelEntry, int]] = []
         for entry in catalog:
-            for model, score in _match_models(model_hint, entry):
+            for model, score in match_models(model_hint, entry):
                 pooled.append((entry, model, score))
         if not pooled:
             raise RouteRefused(
                 f"No model matching {model_hint!r} on any provider you have credentials for "
                 f"({len(catalog)} providers searched). Call dynamic_delegation_models(action='search', "
-                f"query={model_hint!r}) to see candidates, or name the provider: provider/model.")
+                f"query={model_hint!r}) to see candidates, or name the provider: provider/model."
+            )
         pooled.sort(key=lambda t: (-t[2], len(t[1].id)))
         top = pooled[0][2]
         tied = [t for t in pooled if t[2] == top]
         if top < _MODEL_MIN or len({(e.id, m.id) for e, m, _ in tied}) > 1:
-            raise RouteRefused(f"{model_hint!r} matches several providers/models. Name one: "
-                               + ", ".join(f"{e.id}/{m.id}" for e, m, _ in tied[:6]),
-                               [f"{e.id}/{m.id}" for e, m, _ in tied[:6]])
+            raise RouteRefused(
+                f"{model_hint!r} matches several providers/models. Name one: "
+                + ", ".join(f"{e.id}/{m.id}" for e, m, _ in tied[:6]),
+                [f"{e.id}/{m.id}" for e, m, _ in tied[:6]],
+            )
         resolved_provider, resolved_model, _ = tied[0]
 
     # No explicit @effort => the level the user set for that model in the Desktop picker, when they set one.
@@ -626,10 +692,18 @@ def resolve(spec: str, catalog: list[ProviderEntry], parent: Optional[tuple[str,
     if not tier and resolved_model.preset_tier:
         tier = resolved_model.preset_tier
 
-    out = Resolved(provider=resolved_provider.id, model=resolved_model.id, effort=effort, tier=tier,
-                   daybreak=daybreak, label=spec, provider_kind=resolved_provider.kind,
-                   context_length=resolved_model.context_length, supports_vision=resolved_model.supports_vision,
-                   effort_set=resolved_model.effort_set)
+    out = Resolved(
+        provider=resolved_provider.id,
+        model=resolved_model.id,
+        effort=effort,
+        tier=tier,
+        daybreak=daybreak,
+        label=spec,
+        provider_kind=resolved_provider.kind,
+        context_length=resolved_model.context_length,
+        supports_vision=resolved_model.supports_vision,
+        effort_set=resolved_model.effort_set,
+    )
     if daybreak and out.provider != "openai-codex":
         raise RouteRefused(f"+daybreak needs provider openai-codex, not {out.provider!r}.")
     return out

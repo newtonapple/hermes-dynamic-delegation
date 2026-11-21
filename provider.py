@@ -49,10 +49,14 @@ def get_catalog(settings: Mapping[str, Any], force: bool = False) -> list[cat.Pr
     """Cached provider/model catalog (never blocks on the network). Keyed on the settings that
     change its shape, so a `delegation config` edit takes effect without a restart."""
     ttl = float(settings.get("catalog_ttl_seconds", 300) or 300)
-    key = repr((tuple(sorted(str(x) for x in (settings.get("allow_providers") or []))),
-                tuple(sorted(str(x) for x in (settings.get("deny_providers") or []))),
-                tuple(sorted(str(x) for x in (settings.get("extra_providers") or []))),
-                bool(settings.get("respect_desktop_filter", True))))
+    key = repr(
+        (
+            tuple(sorted(str(x) for x in (settings.get("allow_providers") or []))),
+            tuple(sorted(str(x) for x in (settings.get("deny_providers") or []))),
+            tuple(sorted(str(x) for x in (settings.get("extra_providers") or []))),
+            bool(settings.get("respect_desktop_filter", True)),
+        )
+    )
     now = time.time()
     if not force and _cache["catalog"] and _cache.get("key") == key and (now - _cache["ts"]) < ttl:
         return _cache["catalog"]
@@ -62,7 +66,8 @@ def get_catalog(settings: Mapping[str, Any], force: bool = False) -> list[cat.Pr
         include={str(x) for x in include} if include else None,
         exclude={str(x) for x in exclude} if exclude else None,
         extra_providers=[str(x) for x in (settings.get("extra_providers") or [])],
-        respect_desktop_filter=bool(settings.get("respect_desktop_filter", True)))
+        respect_desktop_filter=bool(settings.get("respect_desktop_filter", True)),
+    )
     _cache.update(ts=now, catalog=entries, key=key)
     return entries
 
@@ -81,7 +86,8 @@ def _daybreak_route(name: str, route: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         raise DelegationRouteError(
             f"Route {name!r} asks for Daybreak, which needs the advanced-delegation plugin's gate "
-            f"({exc}). Install advanced-delegation or drop +daybreak.") from exc
+            f"({exc}). Install advanced-delegation or drop +daybreak."
+        ) from exc
 
 
 class DynamicDelegationProvider(DelegationProvider):
@@ -97,8 +103,10 @@ class DynamicDelegationProvider(DelegationProvider):
 
     @property
     def summary(self) -> str:
-        return ("The agent writes provider/model@effort+tier per subagent, resolved against every "
-                "provider you have credentials for.")
+        return (
+            "The agent writes provider/model@effort+tier per subagent, resolved against every "
+            "provider you have credentials for."
+        )
 
     # --- schema ---------------------------------------------------------------------------
 
@@ -110,7 +118,9 @@ class DynamicDelegationProvider(DelegationProvider):
             "Which model runs this subagent, as 'provider/model@effort+tier'.",
             "Provider may be an id, alias or label; the model may be a fragment "
             "(e.g. 'og-home ninfer' -> og-home/qwen3.8-27b-ninfer).",
-            "Effort: " + ", ".join(cat.EFFORTS) + ". Tiers: +fast, +ultrafast, +daybreak (openai-codex only).",
+            "Effort: "
+            + ", ".join(cat.EFFORTS)
+            + ". Tiers: +fast, +ultrafast, +daybreak (openai-codex only).",
             "Omit to inherit the delegating agent's own model. A level the model does not offer is "
             "clamped to the nearest weaker one, never stronger.",
             "Call dynamic_delegation_models to list, search or dry-run a spec before you delegate.",
@@ -118,9 +128,11 @@ class DynamicDelegationProvider(DelegationProvider):
         ]
         return {"route": {"type": "string", "description": "\n".join(lines)}}
 
-    def description(self, config: Mapping[str, Any]) -> str:
-        return ("Each task may set `route` to run that subagent on an exact provider/model at an "
-                "exact thinking level, e.g. route: \"anthropic/claude-opus-5-5@max\".")
+    def description(self, config: Mapping[str, Any]) -> str:  # noqa: ARG002 - core's signature
+        return (
+            "Each task may set `route` to run that subagent on an exact provider/model at an "
+            'exact thinking level, e.g. route: "anthropic/claude-opus-5@max".'
+        )
 
     # --- routing --------------------------------------------------------------------------
 
@@ -135,8 +147,11 @@ class DynamicDelegationProvider(DelegationProvider):
         for entry in options:
             if not isinstance(entry, Mapping) or str(entry.get("name", "")).strip().lower() != wanted:
                 continue
-            route: dict[str, Any] = {key: str(entry[key]).strip() for key in ROUTE_FIELDS
-                                     if isinstance(entry.get(key), str) and entry[key].strip()}
+            route: dict[str, Any] = {
+                key: str(entry[key]).strip()
+                for key in ROUTE_FIELDS
+                if isinstance(entry.get(key), str) and entry[key].strip()
+            }
             route["label"] = spec.strip()
             if entry.get("daybreak") is True:
                 route["daybreak"] = True
@@ -159,8 +174,9 @@ class DynamicDelegationProvider(DelegationProvider):
 
         parent = self._parent_route(config)
         try:
-            resolved = cat.resolve(spec, get_catalog(settings), parent=parent,
-                                   aliases=settings.get("aliases") or {})
+            resolved = cat.resolve(
+                spec, get_catalog(settings), parent=parent, aliases=settings.get("aliases") or {}
+            )
         except cat.RouteRefused as exc:
             raise DelegationRouteError(str(exc)) from exc
 
@@ -170,8 +186,9 @@ class DynamicDelegationProvider(DelegationProvider):
         return route
 
     @staticmethod
-    def _parent_route(config: Mapping[str, Any]) -> Optional[tuple[str, str]]:
-        """(provider, model) of the delegating agent, used when a spec names only a model."""
+    def _parent_route(config: Mapping[str, Any]) -> Optional[tuple[str, str]]:  # noqa: ARG004
+        """(provider, model) of the delegating agent, used when a spec names only a model. Core hands
+        a delegation provider the `delegation` section, so the agent's own model comes from config."""
         try:
             from hermes_cli.config import load_config_readonly as load
         except ImportError:

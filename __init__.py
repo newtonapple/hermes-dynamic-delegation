@@ -9,6 +9,10 @@ shortcuts, so `hermes delegation config` and the Desktop route editor stay usefu
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hermes_cli.plugins_context import PluginContext
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +33,7 @@ def _live_settings() -> dict:
     return dict(block) if isinstance(block, dict) else {}
 
 
-def register(ctx) -> None:
+def register(ctx: "PluginContext") -> None:
     try:
         from .provider import DynamicDelegationProvider
         from .discovery import SCHEMA, TOOLSET, make_handler
@@ -38,13 +42,22 @@ def register(ctx) -> None:
             raise
         logger.warning(
             "dynamic-delegation needs a Hermes core with pluggable delegation providers "
-            "(agent.delegation_provider, Hermes 0.22.5+); update Hermes. The plugin is inactive.")
+            "(agent.delegation_provider, Hermes 0.22.5+); update Hermes. The plugin is inactive."
+        )
         return
     ctx.register_delegation_provider(DynamicDelegationProvider())
     try:
-        ctx.register_tool(name=SCHEMA["name"], toolset=TOOLSET, schema=SCHEMA,
-                          handler=make_handler(_live_settings),
-                          description=SCHEMA["description"], emoji="🧭")
+        ctx.register_tool(
+            name=SCHEMA["name"],
+            toolset=TOOLSET,
+            schema=SCHEMA,
+            handler=make_handler(_live_settings),
+            description=SCHEMA["description"],
+            emoji="🧭",
+        )
     except Exception as exc:  # a tool that cannot register must not take the backend down
-        logger.warning("dynamic-delegation: could not register %s (%s); the route parameter still works.",
-                       SCHEMA["name"], exc)
+        logger.warning(
+            "dynamic-delegation: could not register %s (%s); the route parameter still works.",
+            SCHEMA["name"],
+            exc,
+        )
