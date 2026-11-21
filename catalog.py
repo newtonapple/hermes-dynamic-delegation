@@ -219,7 +219,12 @@ def _ui_values() -> dict:
         else:
             if isinstance(values, dict):
                 return values
-    path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "ui-preferences.json"
+    # Core maps a profile home (<root>/profiles/<name>) up to <root>, so every profile one process
+    # serves reads one machine-level store. Mirror that rule here, or a profile home would look for a
+    # file that does not exist.
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
+    root = home.parent.parent if home.parent.name.lower() == "profiles" else home
+    path = root / "ui-preferences.json"
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:

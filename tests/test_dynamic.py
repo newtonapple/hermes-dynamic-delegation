@@ -349,6 +349,20 @@ def test_no_filter_file_leaves_the_catalog_alone(tmp_path, monkeypatch):
     assert not any(e.filtered for e in entries)
 
 
+def test_a_profile_home_reads_the_machine_root_store(tmp_path, monkeypatch):
+    """Core maps `<root>/profiles/<name>` up to `<root>`, so the filter is machine-level. The plugin
+    must agree from a profile home, or every profile would silently see an empty filter."""
+    import json
+
+    profile = tmp_path / "profiles" / "ft-dev"
+    profile.mkdir(parents=True)
+    (tmp_path / "ui-preferences.json").write_text(
+        json.dumps({"values": {"hermes.desktop.visible-models": json.dumps(["anthropic::claude-sonnet-5"])}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    assert cat.desktop_visible_models() == {"anthropic": {"claude-sonnet-5"}}
+
+
 # --- the provider, on core's real code paths ---------------------------------------------------
 
 
